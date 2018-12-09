@@ -14,7 +14,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--get-ip",
     dest="get_ip",
-    help="Get external ip address and exit",
+    help="Get external dns record and exit",
     action="store_true",
 )
 parser.add_argument(
@@ -26,12 +26,17 @@ parser.add_argument(
     "--ip",
     help="Ip to use for update (if omitted, will use your external ip for the update",
 )
+parser.add_argument(
+    "--dns-file",
+    help="File to start the dns state. If it does not exist it will be created. Default 'dns-record.txt'"
+)
 parser.add_argument("--apikey", help="Dreamhost API key with dns permissions.")
 args = parser.parse_args()
 
 DOMAIN = args.domain
 DREAMHOST_KEY = args.apikey or os.environ.get("APIKEY")
 DREAMHOST_DEFAULT_PARAMS = {"key": DREAMHOST_KEY, "format": "json"}
+DNS_RECORD_FILE = args.dns_file or 'dns-record.txt'
 
 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -43,10 +48,11 @@ def request(params, action=""):
             data = response.read()
             parsed = json.loads(data.decode("utf-8"))
             if parsed.get("result") != "success":
-                raise Exception()
+                raise Exception(parsed)
             return parsed
-    except:
+    except Exception as e:
         print(": ".join([now, "Error from dreamworks api.", action]))
+        print(e)
         sys.exit(-1)
 
 
@@ -57,13 +63,32 @@ def get_ip():
     return output.strip().decode("utf-8")
 
 
+def read_state_file(filename):
+    """
+    Try to get the domain from a file. Assume the file is
+    always up to date. If it doesn't exist, the dns record is created/updated.
+    """
+    f = None
+    try:
+        f = open(filename, 'r')
+        return json.loads(f.read())
+    except:
+        return {}
+    finally:
+        if f:
+            f.close()
+
+def write_state_file(filename, state):
+    state_str = json.dumps(state)
+    f = open(filename, 'w')
+    f.write(state_str)
+
 def get_dns_record(domain):
     params = DREAMHOST_DEFAULT_PARAMS.copy()
     params["cmd"] = "dns-list_records"
     dns_data = request(params, "get_dns_record")
     fqdn = domain.lower()
     return next((r for r in dns_data["data"] if r["record"].lower() == fqdn), None)
-
 
 def add_dns_record(domain, ip):
     params = DREAMHOST_DEFAULT_PARAMS.copy()
@@ -98,9 +123,10 @@ if __name__ == "__main__":
         sys.exit(-1)
 
     ip = args.ip if args.ip else get_ip()
-    record = get_dns_record(args.domain)
+    state = read_state_file(DNS_RECORD_FILE)
+    domain_ip = state.get(DOMAIN)
 
-    if not record:
+    if not domain_ip:
         print(
             now,
             "DNS record for",
@@ -110,16 +136,27 @@ if __name__ == "__main__":
             "... ",
             end="",
         )
+
+        # Update remote dns (possibly remove it first if the state file didn't exist)
+        record = get_dns_record(args.domain)
+        remove_dns_record(record)
         add_dns_record(DOMAIN, ip)
+        # Update local state
+        state[DOMAIN] = ip
+        write_state_file(DNS_RECORD_FILE, state)
         print("done.")
         sys.exit()
 
-    dns_ip = record.get("value", "").strip()
-    if dns_ip == ip.strip():
+    if domain_ip == ip.strip():
         print(now, "nothing to update.", DOMAIN, "is set to", ip)
         sys.exit()
 
-    print(now, "Updating record", DOMAIN, "from", dns_ip, "to", ip, "...", end="")
+    print(now, "Updating record", DOMAIN, "from", domain_ip, "to", ip, "...", end="")
+    # Update remote dns
+    record = get_dns_record(args.domain)
     remove_dns_record(record)
     add_dns_record(DOMAIN, ip)
+    # Update local state
+    state[DOMAIN] = ip
+    write_state_file(DNS_RECORD_FILE, state)
     print("done")
