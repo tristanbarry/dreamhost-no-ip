@@ -101,6 +101,8 @@ def add_dns_record(domain, ip):
 
 
 def remove_dns_record(record):
+    if not record:
+        return
     params = DREAMHOST_DEFAULT_PARAMS.copy()
     params["cmd"] = "dns-remove_record"
     params["record"] = record.get("record")
